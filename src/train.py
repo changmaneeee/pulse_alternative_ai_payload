@@ -14,7 +14,7 @@ MODEL_ROOT_DIR = '../models'
 os.makedirs(MODEL_ROOT_DIR, exist_ok=True)
 
 INPUT_SHAPE = (32, 32, 1)
-BATCH_SIZE = 64
+BATCH_SIZE = 512
 EPOCHS = 50  # [수정] 10 -> 50 (충분히 주고 Early Stopping으로 제어)
 
 # ==========================================
