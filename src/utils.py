@@ -1,50 +1,58 @@
-# 파일 경로: src/utils.py
+# src/utils.py
 import numpy as np
-import tensorflow as tf
+from PIL import Image
 
-def crop_and_resize_pad(full_img, pixels, target_size=(32, 32)):
+def crop_and_resize_pad(pixels_data, target_size=(32, 32)):
     """
-    입자 좌표(pixels)를 받아 정사각형 패딩(Square Padding) 후 
-    비율 왜곡 없이 리사이징합니다.
+    [CPU Optimized] JSON 픽셀 정보를 받아 이미지를 재구성하고
+    PIL을 사용하여 빠르게 리사이징합니다.
     """
-    # 1. 픽셀 정보가 없으면 건너뜀
-    if not pixels:
+    if not pixels_data:
         return None
 
-    # 2. 입자를 감싸는 가장 작은 사각형(Bounding Box) 찾기
-    pixels_np = np.array(pixels)
-    min_y, min_x = np.min(pixels_np, axis=0)
-    max_y, max_x = np.max(pixels_np, axis=0)
+    try:
+        xs = [p['x'] for p in pixels_data]
+        ys = [p['y'] for p in pixels_data]
+        values = [p['value'] for p in pixels_data]
+    except (KeyError, TypeError):
+        return None
+
+    # 1. Bounding Box
+    min_x, max_x = min(xs), max(xs)
+    min_y, max_y = min(ys), max(ys)
     
-    # 3. 이미지 범위 벗어나지 않게 자르기 (ROI 추출)
-    h_img, w_img = full_img.shape
-    y1, y2 = max(0, min_y), min(h_img, max_y + 1)
-    x1, x2 = max(0, min_x), min(w_img, max_x + 1)
+    width = max_x - min_x + 1
+    height = max_y - min_y + 1
     
-    roi = full_img[y1:y2, x1:x2]
+    # 2. Square Canvas (Padding)
+    max_dim = max(width, height)
     
-    # 4. 정사각형 만들기 (Square Padding)
-    # 가로, 세로 중 더 긴 쪽을 찾습니다.
-    roi_h, roi_w = roi.shape
-    max_dim = max(roi_h, roi_w)
+    # PIL 변환을 위해 uint8 혹은 float32 캔버스 생성
+    # 여기서는 리사이징 정확도를 위해 임시 캔버스 사용
+    canvas = np.zeros((max_dim, max_dim), dtype=np.float32)
     
-    if max_dim == 0: return None
+    start_x = (max_dim - width) // 2
+    start_y = (max_dim - height) // 2
     
-    # 검은색(0) 정사각형 도화지를 만듭니다.
-    padded_img = np.zeros((max_dim, max_dim), dtype=np.float32)
+    for x, y, val in zip(xs, ys, values):
+        px = int(start_x + (x - min_x))
+        py = int(start_y + (y - min_y))
+        if 0 <= px < max_dim and 0 <= py < max_dim:
+            canvas[py, px] = val
+
+    # 3. Fast Resize using PIL (CPU)
+    # PIL은 array -> Image 변환 필요
+    img = Image.fromarray(canvas)
     
-    # 잘라낸 입자를 도화지 정중앙에 붙입니다.
-    start_h = (max_dim - roi_h) // 2
-    start_w = (max_dim - roi_w) // 2
-    padded_img[start_h:start_h+roi_h, start_w:start_w+roi_w] = roi
+    # 리사이징 (BILINEAR or NEAREST) - 여기선 NEAREST가 물리적 왜곡 적음
+    img_resized = img.resize(target_size, resample=Image.NEAREST)
     
-    # 5. 크기 줄이기 (Resize) & 정규화 (Normalize)
-    padded_img = padded_img[..., np.newaxis] # 차원 추가 (H, W, 1)
-    resized = tf.image.resize(padded_img, target_size, method='nearest').numpy()
+    resized = np.array(img_resized, dtype=np.float32)
     
-    # 값을 0~1 사이로 맞춰줍니다. (학습이 잘 되게 하기 위함)
+    # 4. Normalize (0~1)
     max_val = np.max(resized)
     if max_val > 0:
         resized = resized / max_val
         
-    return resized
+    # (H, W) -> (H, W, 1) 차원 추가
+    return resized[..., np.newaxis]
