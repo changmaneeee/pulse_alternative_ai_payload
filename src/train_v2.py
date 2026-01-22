@@ -3,6 +3,7 @@ import glob
 import numpy as np
 import tensorflow as tf
 from tensorflow.keras import layers, models, callbacks
+from tensorflow.keras.callbacks import ReduceLROnPlateau # [추가됨] 자동 브레이크
 from sklearn.model_selection import train_test_split
 import pandas as pd
 import matplotlib.pyplot as plt
@@ -11,21 +12,19 @@ import gc
 # ==========================================
 # [설정] Undersampled Dataset
 # ==========================================
-DATA_DIR = '../data/dataset_raw_undersampled_fixed' # 변경된 경로
-MODEL_DIR = '../models_new'
-PLOT_DIR = '../models_new/plots'
+DATA_DIR = '../data/dataset_v3_augmented' 
+MODEL_DIR = '../models_new_v2'
+PLOT_DIR = '../models_new_v2/plots'
 
 if not os.path.exists(PLOT_DIR): os.makedirs(PLOT_DIR)
 
-BATCH_SIZE = 512 # 데이터가 줄었으니 배치 사이즈도 조금 줄여도 됨
+BATCH_SIZE = 512
 MAX_EPOCHS = 200
 
 def get_file_list():
-    files = sorted(glob.glob(os.path.join(DATA_DIR, "raw_part_*.npz")))
+    files = sorted(glob.glob(os.path.join(DATA_DIR, "aug_part_*.npz")))
     if not files: raise FileNotFoundError("❌ 데이터 없음")
     return files
-
-# [변경] 가중치 계산 함수 삭제됨 (필요 없음)
 
 def count_samples(file_list):
     """단순히 총 데이터 개수만 셉니다."""
@@ -46,8 +45,7 @@ def data_generator(file_list):
         np.random.shuffle(files)
         for f in files:
             try:
-                # 1. 파일 로딩 (여기는 에러가 날 수 있음)
-                # mmap_mode 사용 시 파일 핸들이 열려 있어야 하므로 with문 안에서 작업
+                # 1. 파일 로딩
                 with np.load(f, mmap_mode='r') as data:
                     X_chunk = data['X']
                     y_chunk = data['y']
@@ -55,22 +53,17 @@ def data_generator(file_list):
                     indices = np.arange(len(X_chunk))
                     np.random.shuffle(indices)
                     
-                    # 2. 데이터 공급 (여기서 종료 신호가 옴)
+                    # 2. 데이터 공급
                     for i in indices:
                         try:
                             yield X_chunk[i], y_chunk[i]
                         except GeneratorExit:
-                            # [핵심] Keras가 "그만해"라고 하면
-                            # 즉시 함수를 종료(return)해야 함.
-                            # 여기서 break나 continue를 하면 에러가 남.
                             return 
 
             except GeneratorExit:
-                # with문 밖에서도 종료 신호가 오면 즉시 종료
                 return
                 
             except Exception as e:
-                # 파일 깨짐 등 진짜 에러만 건너뜀
                 print(f"⚠️ Data Load Error: {f}")
                 continue
 
@@ -84,14 +77,12 @@ def create_dataset(file_list, is_train=True):
     )
     if is_train: dataset = dataset.shuffle(buffer_size=5000)
     dataset = dataset.batch(BATCH_SIZE)
-    # dataset.repeat() 삭제 (Generator infinite loop)
     dataset = dataset.prefetch(tf.data.AUTOTUNE)
     return dataset
 
-# ... (모델 정의 함수 get_simple_cnn, get_dsc_cnn, get_gap_cnn 동일) ...
-# (코드 길이를 줄이기 위해 모델 정의 부분은 위와 동일하다고 가정합니다)
-# 아래 run_comparison에 넣을 모델 함수들은 꼭 포함해주세요.
-
+# -----------------------------------------------------------
+# 모델 정의 (Simple_CNN, DSC_CNN, GAP_CNN)
+# -----------------------------------------------------------
 def get_simple_cnn():
     model = models.Sequential([
         layers.Input(shape=(32, 32, 1)),
@@ -140,40 +131,56 @@ MODELS = {
     'GAP_CNN': get_gap_cnn
 }
 
+# -----------------------------------------------------------
+# [핵심] 학습 실행 함수 (콜백 수정됨)
+# -----------------------------------------------------------
 def run_comparison():
     all_files = get_file_list()
     print(f">>> 📂 Undersampled 데이터 파일 {len(all_files)}개 로드")
 
     train_files, val_files = train_test_split(all_files, test_size=0.2, random_state=42)
     
-    # [변경] 가중치 계산 없이 총 개수만 셈
     total_samples = count_samples(train_files)
     
     train_ds = create_dataset(train_files, is_train=True)
     val_ds = create_dataset(val_files, is_train=False)
 
-    # 90% 안전 마진
     train_steps = int((total_samples * 0.90) // BATCH_SIZE)
     val_steps = int((total_samples * 0.25 * 0.90) // BATCH_SIZE)
 
     results = []
 
     for name, model_func in MODELS.items():
-        print(f"\n🚀 Training {name} (No Weights)...")
+        print(f"\n🚀 Training {name} ...")
         tf.keras.backend.clear_session()
         gc.collect()
 
         model = model_func()
 
+        # 학습률 초기값 1e-4 (0.0001)
         optimizer = tf.keras.optimizers.Adam(learning_rate=1e-4)
         
-        # [변경] 기본 Adam 사용 (학습률 0.001) - 데이터 균형이 맞으므로 기본값 OK
         model.compile(optimizer=optimizer, 
                       loss='sparse_categorical_crossentropy',
                       metrics=['accuracy'])
         
+        # ======================================================
+        # [수정된 부분] 콜백 리스트: 자동 브레이크 추가
+        # ======================================================
         callbacks_list = [
-            callbacks.EarlyStopping(monitor='val_accuracy', patience=20, restore_best_weights=True)
+            # 1. EarlyStopping: 20번 동안 개선 없으면 완전 종료
+            callbacks.EarlyStopping(monitor='val_accuracy', patience=20, restore_best_weights=True),
+            
+            # 2. ReduceLROnPlateau (자동 브레이크):
+            #    val_loss가 3번(patience) 동안 안 줄어들면 -> 학습률을 절반(0.5)으로 줄임
+            #    이렇게 하면 87%에서 튀지 않고 88%, 89%로 살금살금 내려감
+            ReduceLROnPlateau(
+                monitor='val_loss', 
+                factor=0.5, 
+                patience=3, 
+                min_lr=1e-7, 
+                verbose=1 # 로그에 "Learning rate reduced..." 메시지 출력
+            )
         ]
         
         history = model.fit(
@@ -183,7 +190,6 @@ def run_comparison():
             validation_data=val_ds,
             validation_steps=val_steps,
             callbacks=callbacks_list,
-            # class_weight 삭제됨!
             verbose=1
         )
         
