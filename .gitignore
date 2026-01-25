@@ -1,1 +1,29 @@
-data/*
+# Python cache
+__pycache__/
+*.py[cod]
+
+
+# Dataset (용량이 크므로 제외)
+data/raw/
+data/labelled/
+data/*.npz
+dataset_bulid/
+raw_data/
+# Models (대용량 모델 파일 제외 - 필요시 tflite만 포함)
+*.h5
+*.keras
+# *.tflite  <-- (선택) tflite 파일은 작으니까 git에 올려도 됩니다. 주석 처리함.
+
+# Environment
+.env
+venv/
+env/
+
+# IDE settings
+.vscode/
+.idea/
+
+# Mac OS junk
+.DS_Store
+
+archive/
