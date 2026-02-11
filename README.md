@@ -11,7 +11,7 @@ This project aims to develop a lightweight, onboard AI algorithm for CubeSats (T
 
 ## 📂 Repository Structure
 - `src/`: Python scripts for data processing, training, and validation.
-- `models/`: Trained models (.keras) and converted TFLite models (.tflite).
+- `models/`: converted TFLite model (.tflite).
 - `results/`: Confusion matrices, sample predictions, and benchmark charts.
 - `data/`: (Excluded from git) Dataset files.
 
